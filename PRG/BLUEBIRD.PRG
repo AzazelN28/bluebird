@@ -98,6 +98,7 @@ CONST
 
    // Input
    I_PLAYER = 0;
+   I_SPEED = 100;
 
    // Action system
    ACTION_NONE = 0;
@@ -200,6 +201,10 @@ GLOBAL
    INT global_time;
    INT time_speed = 1000;
 
+   STRUCT input_config[0]
+     up, down, left, right, fire, throttle_up, throttle_down;
+   END = _w, _s, _a, _d, _space, _e, _q;
+
    // Input
    STRUCT input[0]
       INT x;         // -100 to 100
@@ -270,7 +275,7 @@ BEGIN
 
    init_precalculated_trigonometry();
    time_master(); // this should always be running
-   player_input(); // same goes for player input
+   player_input(I_PLAYER); // same goes for player input
 END
 //--------------------------------------------
 
@@ -389,12 +394,14 @@ BEGIN
    post_process();
    id_rail_operator = rail_operator();
    id_camera = camera();
-   id_player = bird();
+   id_player = bird(I_PLAYER);
 
    start_mode8(id_camera, MAIN_M8, MAIN_REGION);
+
    set_env_color(levels[lev].visual.fog_color[0],
                  levels[lev].visual.fog_color[1],
                  levels[lev].visual.fog_color[2]);
+
    set_fog(levels[lev].visual.fog_distance[0],
            levels[lev].visual.fog_distance[1]);
 
@@ -422,23 +429,37 @@ END
 
 
 //--------------------------------------------
-PROCESS player_input();
+PROCESS player_input(player_index);
 //--------------------------------------------
 BEGIN
 
    LOOP
-      input[I_PLAYER].x            = 0;
-      input[I_PLAYER].y            = 0;
-      input[I_PLAYER].throttle     = 0;
-      input[I_PLAYER].fire         = false;
+      input[player_index].x            = 0;
+      input[player_index].y            = 0;
+      input[player_index].throttle     = 0;
+      input[player_index].fire         = false;
 
-      IF (key(_a)) input[I_PLAYER].x = -100; END
-      IF (key(_d)) input[I_PLAYER].x = 100; END
-      IF (key(_w)) input[I_PLAYER].y = 100; END
-      IF (key(_s)) input[I_PLAYER].y = -100; END
-      IF (key(_q)) input[I_PLAYER].throttle = -1; END
-      IF (key(_e)) input[I_PLAYER].throttle = 1; END
-      IF (key(_space)) input[I_PLAYER].fire = true; END
+      IF (key(input_config[player_index].left))
+        input[player_index].x = -I_SPEED;
+      END
+      IF (key(input_config[player_index].right))
+        input[player_index].x = I_SPEED;
+      END
+      IF (key(input_config[player_index].up))
+        input[player_index].y = I_SPEED;
+      END
+      IF (key(input_config[player_index].down))
+        input[player_index].y = -I_SPEED;
+      END
+      IF (key(input_config[player_index].throttle_down))
+        input[player_index].throttle = -1;
+      END
+      IF (key(input_config[player_index].throttle_up))
+        input[player_index].throttle = 1;
+      END
+      IF (key(input_config[player_index].fire))
+        input[player_index].fire = true;
+      END
 
       FRAME;
    END
@@ -475,14 +496,18 @@ BEGIN
    level_rail.block_area = -1;
    level_rail.px = 0;
    level_rail.py = 0;
+
    advance_rail_block_area();
+
    px += level_rail.teleport_pxd;
    py += level_rail.teleport_pyd;
+
    level_rail.teleport_pxd = 0; // don't propagate teleport info this time
    level_rail.teleport_pyd = 0;
 
    rel_min_y = levels[lev].coords.area_y_rel_range[0] * G_RES;
    rel_max_y = levels[lev].coords.area_y_rel_range[1] * G_RES;
+
    level_rail.min_y = py + rel_min_y;
    level_rail.max_y = py + rel_max_y;
    level_rail.min_z = levels[lev].coords.area_z_abs_range[0] * G_RES;
@@ -704,8 +729,10 @@ BEGIN
       END
 
       // smooth approximation
-      py = (target_y * 75 + py * 25) / 100;
-      pz = (target_z * 75 + pz * 25) / 100;
+      //py = (target_y * 75 + py * 25) / 100;
+      py = linear(100, 75, py, target_y);
+      //pz = (target_z * 75 + pz * 25) / 100;
+      pz = linear(100, 75, pz, target_z);
 
       x = px / G_RES;
       y = py / G_RES;
@@ -718,7 +745,7 @@ END
 
 
 //--------------------------------------------
-PROCESS bird();
+PROCESS bird(player_index);
 //--------------------------------------------
 PRIVATE
 
@@ -753,9 +780,11 @@ BEGIN
       py += level_rail.teleport_pyd;
 
       // Movement
-      vy += (input[I_PLAYER].x * 7 * delta) / G_RES;
-      vz += (input[I_PLAYER].y * 7 * delta) / G_RES;
-      vel_mod = sqrt(vy * vy + vz * vz);
+      vy += (input[player_index].x * 7 * delta) / G_RES;
+      vz += (input[player_index].y * 7 * delta) / G_RES;
+      // Better use native functions.
+      vel_mod = fget_dist(0, 0, vy, vz);
+      //vel_mod = sqrt(vy * vy + vz * vz);
       IF (vel_mod > BIRD_MAX_VEL)
          clamp_factor = (BIRD_MAX_VEL * G_RES) / vel_mod;
          vel_mod = BIRD_MAX_VEL;
@@ -788,7 +817,7 @@ BEGIN
       sights.pz += (BIRD_AIM_DIST_X * psin[aim_angle_z]) / G_RES;
 
       // Shooting
-      IF (input[I_PLAYER].fire)
+      IF (input[player_index].fire)
          vulkan_l.action = ACTION_FIRE;
          vulkan_r.action = ACTION_FIRE;
       ELSE
@@ -1249,3 +1278,35 @@ BEGIN
 
 END
 //--------------------------------------------
+
+//--------------------------------------------
+// Interpolaci¢n lineal.
+//--------------------------------------------
+FUNCTION linear(r, p, a, b)
+BEGIN
+  RETURN ((((r - p) * a) + (p * b)) / r);
+END
+
+//--------------------------------------------
+// Interpolaci¢n cuadr tica.
+//--------------------------------------------
+FUNCTION quadratic(r, p, a, b, c)
+PRIVATE
+  d,e;
+BEGIN
+  d = linear(r, p, a, b);
+  e = linear(r, p, b, c);
+  RETURN (linear(r, p, d, e));
+END
+
+//--------------------------------------------
+// Interpolaci¢n c£bica.
+//--------------------------------------------
+FUNCTION cubic(r, p, a, b, c, d)
+PRIVATE
+  e,f;
+BEGIN
+  e = quadratic(r, p, a, b, c);
+  f = quadratic(r, p, b, c, d);
+  RETURN (linear(r, p, e, f));
+END
